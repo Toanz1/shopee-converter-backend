@@ -7,12 +7,13 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-// 1. Thêm Route GET / để khi mở link không bị "Cannot GET /"
+// Điền API Key Camlink của bạn vào đây (hoặc cấu hình qua biến môi trường trên Render)
+const CAMLINK_API_KEY = process.env.CAMLINK_API_KEY || 'clk_live_your_api_key';
+
 app.get('/', (req, res) => {
-  res.send('Shopee Converter Backend is running successfully!');
+  res.send('Shopee Converter Backend (Camlink API) is running!');
 });
 
-// 2. Endpoint Convert link Shopee / Lazada
 app.post('/convert', async (req, res) => {
   try {
     const { url, subId } = req.body;
@@ -20,45 +21,47 @@ app.post('/convert', async (req, res) => {
       return res.status(400).json({ error: 'Thiếu đường dẫn URL sản phẩm' });
     }
 
-    let targetUrl = url.trim();
+    // Gửi request trực tiếp đến Camlink API
+    const response = await fetch('https://apicam.hoantienz.com/api/v1/affiliate/convert-link', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${CAMLINK_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        original_links: [url.trim()],
+        sub_id_1: String(subId || 'guest')
+      })
+    });
 
-    // Tự động giải mã nếu là link rút gọn s.shopee.vn
-    if (targetUrl.includes('s.shopee.vn') || targetUrl.includes('shp.ee')) {
-      try {
-        const response = await fetch(targetUrl, {
-          method: 'GET',
-          redirect: 'follow',
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          },
-        });
-        targetUrl = response.url || targetUrl;
-      } catch (err) {
-        console.error('Không thể bóc tách link rút gọn:', err);
-      }
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      console.error('Lỗi từ Camlink:', result);
+      return res.status(response.status).json({ 
+        error: result?.error?.message || 'Không thể tạo link qua Camlink' 
+      });
     }
 
-    // Lấy Traffic ID MasOffer từ biến môi trường (hoặc fallback)
-    const trafficId = process.env.MASOFFER_TRAFFIC_ID || 'TEST';
-    const cleanUrl = targetUrl.split('?')[0];
+    // Trích xuất link tiếp thị từ phản hồi của Camlink
+    const customLinks = result?.data?.data?.batchCustomLink;
+    if (customLinks && customLinks.length > 0) {
+      const generatedLink = customLinks[0].shortLink || customLinks[0].longLink;
+      return res.json({
+        success: true,
+        affiliateUrl: generatedLink,
+        originalUrl: url
+      });
+    }
 
-    // Tạo Deeplink MasOffer chuẩn (không phụ thuộc Cookie)
-    const affiliateUrl = `https://go.isclix.com/deep_link/v6/${trafficId}/shopee?url=${encodeURIComponent(
-      cleanUrl
-    )}&sub_id1=${encodeURIComponent(subId || 'guest')}`;
+    return res.status(400).json({ error: 'Không nhận được link chuyển đổi từ Camlink' });
 
-    return res.json({
-      success: true,
-      affiliateUrl,
-      originalUrl: targetUrl,
-    });
   } catch (error) {
-    console.error('Lỗi xử lý convert:', error);
-    return res.status(500).json({ error: 'Lỗi máy chủ xử lý link' });
+    console.error('Lỗi server xử lý convert:', error);
+    return res.status(500).json({ error: 'Lỗi máy chủ kết nối Camlink API' });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Backend server running on port ${PORT}`);
 });
