@@ -1,82 +1,64 @@
 import express from 'express';
 import cors from 'cors';
-import axios from 'axios';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
 app.use(cors());
 app.use(express.json());
 
-// Token và cookie Shopee lưu trong biến môi trường
-const SHOPEE_COOKIE = process.env.SHOPEE_COOKIE || '';
+// 1. Thêm Route GET / để khi mở link không bị "Cannot GET /"
+app.get('/', (req, res) => {
+  res.send('Shopee Converter Backend is running successfully!');
+});
 
-app.post('/api/generate-link', async (req, res) => {
-  const { originalUrl, subId } = req.body;
-
-  if (!originalUrl) {
-    return res.status(400).json({ error: 'Thiếu originalUrl' });
-  }
-
+// 2. Endpoint Convert link Shopee / Lazada
+app.post('/convert', async (req, res) => {
   try {
-    // Gọi thẳng vào GraphQL API của cổng Affiliate Shopee
-    const response = await axios.post(
-      'https://affiliate.shopee.vn/api/v3/gql',
-      {
-        operationName: 'batchCustomLink',
-        query: `
-          query batchCustomLink($linkParams: [CustomLinkParam!]!) {
-            batchCustomLink(linkParams: $linkParams) {
-              shortLink
-              longLink
-              failCode
-            }
-          }
-        `,
-        variables: {
-          linkParams: [
-            {
-              originalLink: originalUrl,
-              subIds: subId ? [subId] : [],
-            },
-          ],
-        },
-      },
-      {
-        headers: {
-          'content-type': 'application/json',
-          'cookie': SHOPEE_COOKIE,
-          'user-agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'referer': 'https://affiliate.shopee.vn/offer/custom_link',
-        },
-      }
-    );
-
-    const result = response.data?.data?.batchCustomLink?.[0];
-
-    if (!result || !result.shortLink) {
-      return res.status(500).json({
-        error: 'Không thể tạo link',
-        details: response.data,
-      });
+    const { url, subId } = req.body;
+    if (!url) {
+      return res.status(400).json({ error: 'Thiếu đường dẫn URL sản phẩm' });
     }
+
+    let targetUrl = url.trim();
+
+    // Tự động giải mã nếu là link rút gọn s.shopee.vn
+    if (targetUrl.includes('s.shopee.vn') || targetUrl.includes('shp.ee')) {
+      try {
+        const response = await fetch(targetUrl, {
+          method: 'GET',
+          redirect: 'follow',
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+        });
+        targetUrl = response.url || targetUrl;
+      } catch (err) {
+        console.error('Không thể bóc tách link rút gọn:', err);
+      }
+    }
+
+    // Lấy Traffic ID MasOffer từ biến môi trường (hoặc fallback)
+    const trafficId = process.env.MASOFFER_TRAFFIC_ID || 'TEST';
+    const cleanUrl = targetUrl.split('?')[0];
+
+    // Tạo Deeplink MasOffer chuẩn (không phụ thuộc Cookie)
+    const affiliateUrl = `https://go.isclix.com/deep_link/v6/${trafficId}/shopee?url=${encodeURIComponent(
+      cleanUrl
+    )}&sub_id1=${encodeURIComponent(subId || 'guest')}`;
 
     return res.json({
       success: true,
-      shortLink: result.shortLink,
-      longLink: result.longLink,
+      affiliateUrl,
+      originalUrl: targetUrl,
     });
   } catch (error) {
-    return res.status(500).json({
-      error: 'Lỗi kết nối tới Shopee API',
-      message: error.message,
-    });
+    console.error('Lỗi xử lý convert:', error);
+    return res.status(500).json({ error: 'Lỗi máy chủ xử lý link' });
   }
 });
 
-const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
-  console.log(`Shopee Service đang chạy tại port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
